@@ -10,3 +10,8 @@ pgvector==0.3.6
 numpy==2.2.1
 pytest==8.3.4
 httpx==0.28.1
+# Used only by `python tests/fixture_runner.py --live` to measure the running
+# container (real embedder) during the measure-tune loop; not needed for pytest.
+requests==2.32.3
+# Process-level restart tests launch the app as a separate local service.
+uvicorn==0.34.0

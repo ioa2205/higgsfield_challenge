@@ -8,12 +8,13 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Request, Response
 
-from .. import config
 from ..db import queries
+from ..entities import populate_entities
+from ..evolution import apply_supersession
 from ..extraction import extract_memories
 from ..logging_config import log_event
-from ..recall import assemble_context
-from ..search import format_results
+from ..recall import run_recall
+from ..search import run_search
 from .auth import require_auth
 from .models import (
     HealthResponse,
@@ -99,7 +100,7 @@ async def post_turn(body: TurnRequest, request: Request) -> TurnResponse:
                     msg.content,
                 )
             for draft, embedding in zip(drafts, embeddings):
-                await queries.insert_memory(
+                mem_id = await queries.insert_memory(
                     conn,
                     user_id=user_id,
                     mtype=draft.type,
@@ -111,6 +112,10 @@ async def post_turn(body: TurnRequest, request: Request) -> TurnResponse:
                     embedding=embedding,
                     provenance=draft.provenance,
                 )
+                # Phase 4: supersede any conflicting active memory, then
+                # register entity links for the new memory.
+                await apply_supersession(conn, draft, mem_id, user_id, embedding)
+                await populate_entities(conn, mem_id, draft, user_id)
 
     return TurnResponse(id=str(turn_id))
 
@@ -122,12 +127,15 @@ async def post_recall(body: RecallRequest, request: Request) -> RecallResponse:
     embedding = await _embed(request, body.query)
 
     async with pool.acquire() as conn:
-        rows = await queries.recall_by_vector(
-            conn, user_id, embedding, config.TOP_K
+        context, citations = await run_recall(
+            conn,
+            user_id=user_id,
+            session_id=body.session_id,
+            query=body.query,
+            embedding=embedding,
+            max_tokens=body.max_tokens,
         )
 
-    rows = [dict(r) for r in rows if r["score"] >= config.RECALL_MIN_SCORE]
-    context, citations = assemble_context(rows)
     log_event(
         logger,
         "recall",
@@ -135,6 +143,7 @@ async def post_recall(body: RecallRequest, request: Request) -> RecallResponse:
         session_id=body.session_id,
         max_tokens=body.max_tokens,
         n_hits=len(citations),
+        empty=not context,
     )
     return RecallResponse(context=context, citations=citations)
 
@@ -142,14 +151,30 @@ async def post_recall(body: RecallRequest, request: Request) -> RecallResponse:
 @protected.post("/search", response_model=SearchResponse)
 async def post_search(body: SearchRequest, request: Request) -> SearchResponse:
     pool = request.app.state.pool
-    user_id = _effective_user(body.user_id, body.session_id)
+    # /search honours explicit §3 scoping: filter by user_id and/or session_id
+    # exactly as supplied (both nullable). No anon-key rewrite — a search with
+    # neither scope is a global search, which the contract permits.
     embedding = await _embed(request, body.query)
 
     async with pool.acquire() as conn:
-        rows = await queries.recall_by_vector(conn, user_id, embedding, body.limit)
+        results = await run_search(
+            conn,
+            user_id=body.user_id,
+            session_id=body.session_id,
+            query=body.query,
+            embedding=embedding,
+            limit=body.limit,
+        )
 
-    rows = [dict(r) for r in rows if r["score"] >= config.RECALL_MIN_SCORE]
-    return SearchResponse(results=format_results(rows))
+    log_event(
+        logger,
+        "search",
+        user_id=body.user_id,
+        session_id=body.session_id,
+        limit=body.limit,
+        n_results=len(results),
+    )
+    return SearchResponse(results=results)
 
 
 @protected.get("/users/{user_id}/memories", response_model=MemoriesResponse)

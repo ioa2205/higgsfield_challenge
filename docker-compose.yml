@@ -28,6 +28,16 @@ services:
       PGDATABASE: ${PGDATABASE:-memory}
       # Optional: set to enable bearer auth.
       MEMORY_AUTH_TOKEN: ${MEMORY_AUTH_TOKEN:-}
+      # Recall noise gate (Phase 3). Overridable for the measure-tune loop; the
+      # baked default lives in src/config.py. bge's unrelated-pair cosine sits
+      # ~0.42–0.50, so the floor sits above it; keyword hits bypass it.
+      RECALL_MIN_SCORE: ${RECALL_MIN_SCORE:-0.55}
+      SEM_TOP_N: ${SEM_TOP_N:-20}
+      KW_TOP_N: ${KW_TOP_N:-20}
+      RRF_K: ${RRF_K:-60}
+      TIER3_RECENT_N: ${TIER3_RECENT_N:-5}
+      RECALL_SNIPPET_MAX: ${RECALL_SNIPPET_MAX:-240}
+      SUPERSESSION_SIM_THRESHOLD: ${SUPERSESSION_SIM_THRESHOLD:-0.92}
       # Optional LLM extraction (provider-agnostic). Set ONE key to enable it;
       # with none set, extraction uses the offline deterministic rule path.
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
@@ -37,6 +47,8 @@ services:
       LLM_PROVIDER: ${LLM_PROVIDER:-auto}
       LLM_MODEL: ${LLM_MODEL:-}
       LLM_TIMEOUT: ${LLM_TIMEOUT:-25}
+      # Reject oversized requests before JSON parsing.
+      MAX_REQUEST_BODY_BYTES: ${MAX_REQUEST_BODY_BYTES:-1048576}
     ports:
       - "8080:8080"
     depends_on:

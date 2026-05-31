@@ -10,9 +10,11 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from . import config
+from .api.middleware import MaxBodySizeMiddleware
 from .api.routes import protected, router
 from .db.migrations import run_migrations
 from .db.pool import create_pool
@@ -59,6 +61,25 @@ async def lifespan(app: FastAPI):
         log_event(logger, "shutdown.complete")
 
 
-app = FastAPI(title="Memory Service", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Memory Service", version="1.0.0", lifespan=lifespan)
+app.add_middleware(MaxBodySizeMiddleware, max_bytes=config.MAX_REQUEST_BODY_BYTES)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
+    """Keep unexpected request failures contained and observable."""
+    logger.exception(
+        "request.unhandled",
+        extra={
+            "fields": {
+                "method": request.method,
+                "path": request.url.path,
+                "exception": type(exc).__name__,
+            }
+        },
+    )
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+
+
 app.include_router(router)
 app.include_router(protected)

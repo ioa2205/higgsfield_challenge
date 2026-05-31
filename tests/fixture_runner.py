@@ -8,9 +8,8 @@ breakdown:
     memory value in ``GET /users/{id}/memories``. This is the metric Phase 2
     tunes (the LLM/rule extractor), independent of recall ranking.
   * **RECALL-CONTEXT** — of those facts, how many appear in the ``POST /recall``
-    context string. Probes flagged ``recall_expected:false`` (fact evolution,
-    multi-hop, noise) are known Phase-2 recall gaps — their misses are expected
-    and called out, not silent.
+    context string. ``recall_expected:false`` remains available for honest
+    iteration tracking, although every shipped v1.0 probe is now in scope.
 
 Idempotent: each scenario's user is DELETEd before ingest, so repeated runs (and
 the test that wraps this) start clean. Importable (``run_fixtures(client)``) and
@@ -169,7 +168,7 @@ def format_report(report: Report) -> str:
         rec = f"{p.recall_hits}/{p.recall_total}"
         notes = []
         if not p.recall_expected:
-            notes.append("recall gap -> Phase3")
+            notes.append("recall intentionally out of scope")
         if p.missing_extraction:
             notes.append("missing-ext:" + ",".join(p.missing_extraction))
         if p.missing_recall and not p.expect_empty:
@@ -186,13 +185,50 @@ def format_report(report: Report) -> str:
     lines.append(f"RECALL-CONTEXT metric  : {rh}/{rt}  ({pct(rh, rt)})  (all probes)")
     lines.append(
         f"RECALL (in-scope only) : {rih}/{rit}  ({pct(rih, rit)})  "
-        f"(excludes evolution/multi-hop/noise — Phase-3 features)"
+        f"(all shipped v1.0 probes are in scope)"
     )
     lines.append("=" * 78)
     return "\n".join(lines)
 
 
+class _LiveClient:
+    """Minimal TestClient-shaped adapter over a running service (real embedder),
+    so ``run_fixtures`` can measure the dockerized container at :8080 — the true
+    eval condition. Used by ``python tests/fixture_runner.py --live``."""
+
+    def __init__(self, base_url: str, token: str | None = None) -> None:
+        import requests
+
+        self._base = base_url.rstrip("/")
+        self._s = requests.Session()
+        if token:
+            self._s.headers["Authorization"] = f"Bearer {token}"
+
+    def post(self, path, json=None):
+        return self._s.post(self._base + path, json=json, timeout=60)
+
+    def get(self, path):
+        return self._s.get(self._base + path, timeout=60)
+
+    def delete(self, path):
+        return self._s.delete(self._base + path, timeout=60)
+
+
 def main() -> None:
+    import sys
+
+    if "--live" in sys.argv:
+        base = os.environ.get("MEMORY_URL", "http://localhost:8080")
+        token = os.environ.get("MEMORY_AUTH_TOKEN") or None
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
+        report = run_fixtures(_LiveClient(base, token))
+        print(f"[live @ {base}]")
+        print(format_report(report))
+        return
+
     # Spin up the in-process app exactly like the test suite.
     os.environ.setdefault("EMBED_BACKEND", "fake")
     os.environ.setdefault("PGHOST", "localhost")

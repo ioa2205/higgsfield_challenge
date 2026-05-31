@@ -86,6 +86,21 @@ CREATE TABLE IF NOT EXISTS memory_entities (
     relation  text NOT NULL DEFAULT 'related',
     PRIMARY KEY (memory_id, entity_id, relation)
 );
+
+-- Phase 4: upsert_entity needs a unique constraint on (user_id, entity_type, name).
+-- Use a DO block because ADD CONSTRAINT IF NOT EXISTS is Postgres 16.4+ only.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'uq_entity_user_type_name'
+    ) THEN
+        ALTER TABLE entities
+            ADD CONSTRAINT uq_entity_user_type_name
+            UNIQUE (user_id, entity_type, name);
+    END IF;
+END
+$$;
 """
 
 

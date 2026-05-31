@@ -110,16 +110,21 @@ conftest.py          repo-root sys.path shim so `import src` works
 
 src/
   main.py            FastAPI app + lifespan (embedder → migrations → pool); mounts routers
-  config.py          THE tunable surface: EMBED_DIM, TOP_K, RECALL_MIN_SCORE, DB/auth helpers
+  config.py          THE tunable surface: EMBED_DIM, recall knobs (SEM_TOP_N, KW_TOP_N,
+                     RRF_K, RECALL_MIN_SCORE [noise gate], TIER3_RECENT_N, RECALL_SNIPPET_MAX),
+                     LLM resolve, DB/auth helpers
   logging_config.py  JSON-line structured logging + log_event()
   api/
     models.py        Pydantic request/response models mirroring §3 EXACTLY
     auth.py          optional bearer dependency (require_auth)
-    routes.py        the 7 endpoints; naive store/recall orchestration
+    routes.py        the 7 endpoints; thin — store via extraction, recall via recall.run_recall,
+                     search via search.run_search
   db/
     pool.py          asyncpg pool + register_vector on init
     migrations.py    idempotent full schema (turns, messages, memories, entities, memory_entities) + indexes
-    queries.py       all SQL (insert turn/message/memory, recall_by_vector, list, delete session/user)
+    queries.py       all SQL: insert turn/message/memory; recall — semantic_recall (cosine),
+                     keyword_recall (OR-tsquery ts_rank), tier1_facts, recent_session_events;
+                     search_hybrid; list; delete session/user
   embeddings/
     embedder.py      FastEmbedEmbedder (real, offline) + FakeEmbedder (tests) + get_embedder()
   extraction/        HYBRID, synchronous (phase 2). draft.py = MemoryDraft + the
@@ -128,16 +133,39 @@ src/
                      default path); llm.py = PROVIDER-AGNOSTIC LLM extractor (Gemini /
                      Anthropic / OpenAI over httpx, forced structured JSON); pipeline.py =
                      extract() = LLM-primary → rule fallback → event fallback
-  recall/            naive.py — cosine top-k, grouped into "Known facts" / "recent
-                     conversations" sections + {turn_id,score,snippet} citations (phase 3+
-                     adds hybrid + RRF + token-budgeted tiering)
-  search/            naive.py — §3 /search result formatting (phases 3+ add full-text/hybrid)
+  evolution/         Phase-4 supersession. supersede.py = apply_supersession(conn, draft,
+                     new_memory_id, user_id, embedding): exact slot-key match (primary,
+                     deterministic) + fuzzy embedding match (safety net, threshold
+                     SUPERSESSION_SIM_THRESHOLD). Opinions use the same key-based chain.
+                     All called inside the /turns transaction → atomic with insert.
+  entities/          Phase-4 entity layer. populate.py = populate_entities(conn, memory_id,
+                     draft, user_id): extracts (employer/city/pet) entities from memory
+                     values via regex and links them via memory_entities (idempotent ON
+                     CONFLICT DO NOTHING). Unique constraint on entities(user_id,type,name).
+  recall/            HYBRID recall (phase 3+4). retrieval.py = pgvector cosine top-N +
+                     full-text ts_rank top-N (OR-tsquery) + Tier-1 facts (cross-session,
+                     LEFT JOINs the superseded predecessor for the "updated…; previously…"
+                     annotation) + recent session events + entity_hop (Phase 4);
+                     fusion.py = RRF (Σ 1/(k+rank)); assembly.py = tiered token-budget
+                     builder (Tier-1 "## Known facts about this user" → Tier-2/3
+                     "## Relevant from recent conversations") with NOISE GATE + entity_hop
+                     widening + {turn_id,score,snippet} citations;
+                     decompose.py = entity_hop_candidates: finds entity names in query →
+                     returns all entity-linked active facts + all active facts (fallback)
+                     so cross-session city/location memories are not missed;
+                     service.py = run_recall orchestration (retrieve → fuse → assemble)
+  search/            search.py — structured §3 /search (content,score,session_id,timestamp,
+                     metadata): hybrid-scored (best of ts_rank / cosine), scoped by user_id
+                     and/or session_id, honours `limit`. run_search + format_results
 
 tests/
   conftest.py        in-process TestClient factory; fake embedder; db on :5433; LLM_PROVIDER=none
   fixture_runner.py  ingest fixtures/ → EXTRACTION + RECALL-CONTEXT metrics (iteration loop);
-                     importable (run_fixtures) and standalone (python tests/fixture_runner.py)
+                     importable (run_fixtures); standalone `python tests/fixture_runner.py`
+                     (fake embedder) or `--live` (real embedder @ :8080, the tune condition)
   test_contract.py   shapes + status codes (incl. multi-message + tool msg, name null & set)
+  test_recall.py     phase-3: token budget (incl. unicode, Tier-1 wins), Tier-1-before-recent,
+                     noise→empty, /search shape+scoping+limit, coarse /recall latency
   test_extraction.py typed records, implicit pet, correction, synchronous correctness, rule
                      fallback when LLM errors, LLM-result-used branch, fixture-metric guard
   test_persistence.py write → restart db container → still recallable
@@ -145,6 +173,12 @@ tests/
   test_malformed.py  bad JSON / missing fields / unicode → 4xx; /health still 200
   test_auth.py       token unset = open; token set = 401/403/normal; /health always open
   test_delete.py     session delete (scoped) / user delete (cascade) / idempotent
+  test_evolution.py  Phase-4: Stripe→Notion employment; Berlin location; TypeScript opinion
+                     arc. active=1 after supersession, inactive preserved, supersedes ptr set,
+                     updated_at advanced, "previously" annotation in /recall context.
+  test_multihop.py   Phase-4: Biscuit+Lisbon cross-session; CONTROL assertion proves city
+                     scores 0.0 in vanilla /search (no keyword/cosine overlap) while full
+                     /recall surfaces it via Tier-1 + entity-hop.
 
 fixtures/
   conversations.json 6 scripted multi-session scenarios + probes (basic / implicit pet /
@@ -205,9 +239,54 @@ error/timeout (`LLM_TIMEOUT`, default 25s) so the pipeline falls back to rules.
 - Phase 1 NOT regressed: all six phase-1 test files still green (25 tests total); §7 Berlin
   smoke still passes against the rebuilt image.
 
-**Phase 3 — Hybrid recall + RRF + tiered context assembly: NEXT.**
-- Add keyword (tsvector/BM25) retrieval alongside vector; fuse with RRF. Build token-budgeted
-  tiered assembly (stable facts → query-relevant → recent, session-scoped). Add a recall score
-  threshold so noise queries return empty context.
-- Then supersession (fact evolution: mark old same-slot facts inactive, keep history) and the
-  entity layer for multi-hop. These are why the evolution/multi-hop/noise recall probes fail today.
+**Phase 3 — Hybrid recall + RRF + tiered context assembly: DONE.**
+- `recall/naive.py` + inline `/search` replaced by `recall/{retrieval,fusion,assembly,service}.py`
+  and `search/search.py`. Retrieval = pgvector cosine top-N + Postgres full-text ts_rank top-N
+  (OR-tsquery so any salient term matches); fused by RRF (Σ 1/(RRF_K+rank)). Assembly = tiered
+  token-budget builder: Tier-1 "## Known facts about this user" (active facts, cross-session,
+  predecessor LEFT-JOINed for the Phase-4 "updated…; previously…" annotation) → Tier-2/3
+  "## Relevant from recent conversations" (query-relevant + recent session events). Conservative
+  over-count `max(words×1.3, chars/4)` keeps context ≤ ~1× max_tokens, never near 2×.
+- **Noise gate**: emit context only when a keyword hit (ts_rank>0) OR a vector hit ≥
+  `RECALL_MIN_SCORE` exists — else `{"context":"","citations":[]}`. The digest is *gated*, not
+  unconditional, so an off-topic query returns empty rather than dumping known facts.
+- `/search` is structured + scoped (user/session) + limit-honouring; new recall knobs all live
+  in `src/config.py`.
+- **Measure-tune loop** (real bge embedder, live container): first metric in-scope **5/6** with
+  the noise probe leaking at cosine 0.4185; tuned `RECALL_MIN_SCORE` 0.30→0.45→0.55 (locked) →
+  in-scope **6/6**, noise empty, wider bge noise band (0.42–0.50) rejected; 0.65 gave no gain
+  (stop). Key finding: bge's unrelated cosine overlaps weak-relevant, so the full-text half
+  carries deterministic relevance and the vector floor only gates pure-vector noise. CHANGELOG v0.3.
+- Phase 1–2 NOT regressed: 30 tests green (added `test_recall.py`); §7 Berlin smoke still passes.
+
+**Phase 4 — Fact evolution/supersession + entity layer + multi-hop: DONE.**
+- Slot-based supersession via `evolution/supersede.py`: exact key-match (primary) + fuzzy
+  embedding match (safety net, `SUPERSESSION_SIM_THRESHOLD=0.92`). Old row set `active=false`,
+  `supersedes` pointer set on new row, history preserved. Opinion arcs use the same key chain.
+- Entity layer via `entities/populate.py`: employment→employer, location→city, pet.name→pet
+  entities created atomically with each insert; linked via `memory_entities`.
+- Multi-hop query decomposition via `recall/decompose.py`: if an entity name appears in the
+  query, all entity-linked active facts (+ all active facts as fallback) are added to Tier-1
+  so cross-session facts (e.g. city for a user with a dog named Biscuit) are never missed.
+- Tier-1 assembly now renders "updated …; previously …" (the LEFT JOIN path designed in Phase 3
+  is now populated by real supersession data).
+- All 46 tests green (11 evolution + 5 multi-hop + 30 phases 1–3); fixture **9/9 (100%)** all
+  probes in-scope (evolution+multi-hop flags updated to `recall_expected:true`).
+- Supersession threshold tuning reached stop condition after 2 rounds: fuzzy path not exercised
+  by fake-embedder fixture (all cases exact-key match); locked 0.92 as conservative default.
+
+**Phase 5 — Hardening + final global tuning + README/CHANGELOG finalization: DONE. SHIPPABLE.**
+- ASGI body-size cap (`MAX_REQUEST_BODY_BYTES=1048576`), bounded request models,
+  NUL rejection, extraction-output sanitization, and a global exception handler.
+- Structured lifecycle logs cover extraction path/degradation, auth denials,
+  supersession events, and recall tier decisions.
+- Process-level tests prove no-key fallback in a separately launched app and
+  transaction rollback after killing/restarting the app mid-write against the
+  same durable Postgres volume.
+- Final live real-embedder tuning pass stopped after two no-gain single-variable
+  trials (`RRF_K=40`, then `SEM_TOP_N=12`). Locked defaults remain:
+  `SEM_TOP_N=20`, `KW_TOP_N=20`, `RRF_K=60`, `RECALL_MIN_SCORE=0.55`,
+  `TIER3_RECENT_N=5`, `RECALL_SNIPPET_MAX=240`,
+  `SUPERSESSION_SIM_THRESHOLD=0.92`.
+- Final fixture: **EXTRACTION 8/8 (100%)**, **RECALL-CONTEXT 9/9 (100%)**,
+  noise probe empty. README and CHANGELOG are final reviewer-facing docs.

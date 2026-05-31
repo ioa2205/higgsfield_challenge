@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import logging
 
+from .. import config
+from ..logging_config import log_event
 from .draft import MEMORY_TYPES, MemoryDraft, clamp_confidence
 from .llm import get_llm_extractor
 from .rules import _user_text, rule_extract
@@ -28,6 +30,7 @@ from .rules import _user_text, rule_extract
 logger = logging.getLogger("memory.extraction")
 
 _VALUE_MAX = 500
+_KEY_MAX = 128
 
 
 def _normalize_llm(items: list[dict], provenance: str) -> list[MemoryDraft]:
@@ -69,6 +72,27 @@ def _event_fallback(messages: list[dict]) -> list[MemoryDraft]:
     return [MemoryDraft("event", None, text[:_VALUE_MAX], 0.4, "rule:event")]
 
 
+def _sanitize(drafts: list[MemoryDraft]) -> list[MemoryDraft]:
+    """Bound model/rule output before embedding or writing it to Postgres."""
+    out: list[MemoryDraft] = []
+    for draft in drafts:
+        if draft.type not in MEMORY_TYPES:
+            continue
+        value = draft.value.replace("\x00", "").strip()[:_VALUE_MAX]
+        key = draft.key.replace("\x00", "").strip()[:_KEY_MAX] if draft.key else None
+        if value:
+            out.append(
+                MemoryDraft(
+                    draft.type,
+                    key or None,
+                    value,
+                    clamp_confidence(draft.confidence),
+                    draft.provenance,
+                )
+            )
+    return out
+
+
 def extract(messages: list[dict]) -> list[MemoryDraft]:
     """Return typed memory drafts for one turn (synchronous, never raises)."""
     drafts: list[MemoryDraft] = []
@@ -80,6 +104,20 @@ def extract(messages: list[dict]) -> list[MemoryDraft]:
         if items:
             drafts = _normalize_llm(items, provenance=f"llm:{extractor.provider}")
             path = f"llm:{extractor.provider}"
+        else:
+            log_event(
+                logger,
+                "extraction.degraded",
+                reason="llm_failed_or_empty",
+                provider=extractor.provider,
+            )
+    else:
+        reason = (
+            "llm_disabled"
+            if config.LLM_PROVIDER in ("none", "off", "disabled", "fake")
+            else "api_key_missing"
+        )
+        log_event(logger, "extraction.degraded", reason=reason)
 
     if not drafts:  # no LLM, LLM failed, or LLM returned nothing usable
         drafts = rule_extract(messages)
@@ -89,5 +127,6 @@ def extract(messages: list[dict]) -> list[MemoryDraft]:
         drafts = _event_fallback(messages)
         path = "rule:event"
 
-    logger.debug("extracted %d memories via %s", len(drafts), path)
+    drafts = _sanitize(drafts)
+    log_event(logger, "extraction.path", path=path, n_memories=len(drafts))
     return drafts

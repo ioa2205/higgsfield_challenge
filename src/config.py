@@ -83,12 +83,41 @@ def resolve_llm() -> tuple[str, str, str] | None:
     return None
 
 
-# --- Recall (naive cosine top-k this phase) --------------------------------
+# --- Recall: hybrid retrieval + RRF + tiered assembly (Phase 3) ------------
+# THE recall tuning surface. The measure-tune loop changes exactly ONE of these
+# per round and re-runs tests/fixture_runner.py (see CHANGELOG v0.3).
+#
+# Legacy naive top-k (kept for reference / any direct vector call).
 TOP_K = int(os.environ.get("RECALL_TOP_K", "5"))
-# Cosine-similarity floor for a memory to count as a match. Default is
-# permissive (-1.0 keeps everything) so cold/irrelevant only returns empty when
-# the user genuinely has no memories. Later phases tune this.
-RECALL_MIN_SCORE = float(os.environ.get("RECALL_MIN_SCORE", "-1.0"))
+# Per-source retrieval depth fed into RRF (semantic = pgvector cosine, keyword =
+# Postgres full-text ts_rank). Deeper N = more recall, more fusion work.
+SEM_TOP_N = int(os.environ.get("SEM_TOP_N", "20"))
+KW_TOP_N = int(os.environ.get("KW_TOP_N", "20"))
+# Reciprocal Rank Fusion constant: rrf = Σ 1/(RRF_K + rank). ~60 is the standard
+# value; larger flattens the rank weighting, smaller sharpens the head.
+RRF_K = int(os.environ.get("RRF_K", "60"))
+# THE NOISE GATE. A memory counts as relevant (→ /recall emits context) iff it
+# is a keyword hit (ts_rank > 0) OR its vector cosine clears this floor. A query
+# about an undiscussed topic clears neither, so /recall returns empty (§9). With
+# the real bge embedder this is the main knob to keep noise empty without
+# dropping true hits; the keyword half carries the deterministic test path.
+RECALL_MIN_SCORE = float(os.environ.get("RECALL_MIN_SCORE", "0.55"))
+# Tier-3 "recent conversation" tier: how many recent session-scoped events to
+# consider for the second section.
+TIER3_RECENT_N = int(os.environ.get("TIER3_RECENT_N", "5"))
+# Max characters per rendered snippet / citation (keeps lines budget-friendly).
+SNIPPET_MAX = int(os.environ.get("RECALL_SNIPPET_MAX", "240"))
+
+# --- Phase 4: supersession ------------------------------------------------
+# Fuzzy supersession similarity floor. When two memories share the same slot
+# key, exact-key match fires (deterministic). When they DON'T share a key,
+# the fuzzy path checks cosine similarity: if >= this threshold AND same type,
+# the newer supersedes the older. Too low → false merges (unrelated facts
+# wrongly collapsed); too high → missed merges (stale facts remain active).
+# Tuned via the measure-tune loop recorded in CHANGELOG v0.4.
+SUPERSESSION_SIM_THRESHOLD = float(
+    os.environ.get("SUPERSESSION_SIM_THRESHOLD", "0.92")
+)
 
 # --- Database --------------------------------------------------------------
 POOL_MIN = int(os.environ.get("POOL_MIN", "1"))
@@ -115,3 +144,11 @@ def auth_token() -> str | None:
 
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
+
+# --- Request hardening ------------------------------------------------------
+# Enforced at the ASGI boundary before JSON parsing. Field-level limits below
+# keep valid-but-pathological payloads bounded after the body-size check.
+MAX_REQUEST_BODY_BYTES = int(os.environ.get("MAX_REQUEST_BODY_BYTES", str(1024 * 1024)))
+MAX_MESSAGES_PER_TURN = int(os.environ.get("MAX_MESSAGES_PER_TURN", "100"))
+MAX_MESSAGE_CONTENT_CHARS = int(os.environ.get("MAX_MESSAGE_CONTENT_CHARS", "50000"))
+MAX_QUERY_CHARS = int(os.environ.get("MAX_QUERY_CHARS", "4096"))

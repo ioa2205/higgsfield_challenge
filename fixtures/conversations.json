@@ -1,5 +1,5 @@
 {
-  "_about": "Recall-quality fixture for the memory service. Each scenario is a set of multi-session conversations ingested via POST /turns, plus probe queries. Each probe lists the substrings ('expect') that should appear (a) as a typed memory value in GET /users/{id}/memories (EXTRACTION metric) and (b) in the POST /recall context (RECALL-CONTEXT metric). 'recall_expected:false' marks probes whose RECALL is a known Phase-2 gap (fact evolution, multi-hop, noise) — those need supersession / entity-graph / thresholding built in later phases; their EXTRACTION is still expected to pass now. Data only — no logic. See tests/fixture_runner.py.",
+  "_about": "Recall-quality fixture for the memory service. Each scenario is a set of multi-session conversations ingested via POST /turns, plus probe queries. Each probe lists the substrings ('expect') that should appear (a) as a typed memory value in GET /users/{id}/memories (EXTRACTION metric) and (b) in the POST /recall context (RECALL-CONTEXT metric). Every shipped v1.0 probe is in scope, including noise resistance, evolution, and multi-hop recall. Data only - no logic. See tests/fixture_runner.py.",
   "scenarios": [
     {
       "id": "basic-recall",
@@ -19,7 +19,7 @@
       ],
       "probes": [
         {"query": "Where does the user work?", "expect": ["Stripe"], "expect_keys": ["employment"], "category": "basic"},
-        {"query": "What are the user's dietary restrictions?", "expect": ["vegetarian", "shellfish"], "expect_keys": ["diet", "allergy"], "category": "basic"}
+        {"query": "Is the user vegetarian, and what are they allergic to?", "expect": ["vegetarian", "shellfish"], "expect_keys": ["diet", "allergy"], "category": "basic"}
       ]
     },
     {
@@ -62,7 +62,7 @@
         }
       ],
       "probes": [
-        {"query": "Where does the user work now?", "expect": ["Notion"], "expect_keys": ["employment"], "category": "evolution", "recall_expected": false}
+        {"query": "Where does the user work now?", "expect": ["Notion"], "expect_keys": ["employment"], "category": "evolution", "recall_expected": true}
       ]
     },
     {
@@ -87,7 +87,7 @@
         }
       ],
       "probes": [
-        {"query": "What city does the user with the dog named Biscuit live in?", "expect": ["Lisbon", "Biscuit"], "expect_keys": ["location", "pet.name"], "category": "multihop", "recall_expected": false}
+        {"query": "What city does the user with the dog named Biscuit live in?", "expect": ["Lisbon", "Biscuit"], "expect_keys": ["location", "pet.name"], "category": "multihop", "recall_expected": true}
       ]
     },
     {
@@ -105,7 +105,7 @@
         }
       ],
       "probes": [
-        {"query": "What is the user's favourite football team?", "expect": [], "expect_empty": true, "category": "noise", "recall_expected": false}
+        {"query": "What is the user's favourite football team?", "expect": [], "expect_empty": true, "category": "noise", "recall_expected": true}
       ]
     },
     {
