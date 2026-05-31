@@ -63,6 +63,13 @@ paraphrases and nuanced relationships outside those patterns; the optional LLM
 path is the broader extractor. The event fallback is labeled honestly and is
 not presented as a structured fact.
 
+`LLM_PROVIDER=auto` selects the first configured provider. The current defaults
+are `gemini-flash-latest` (the evergreen Gemini Flash alias, currently Gemini
+3.5 Flash), `claude-haiku-4-5`, and `gpt-5-mini`; `LLM_MODEL` can override any
+of them. Provider API keys are sent in headers, never URL query strings.
+LLM-produced aliases such as `current_city`, `pet.dog.name`, and `pet.type` are
+normalized back into the canonical slots before evolution and entity linking.
+
 ## 4. Recall Strategy
 
 `/recall` embeds the query locally with `BAAI/bge-small-en-v1.5` and retrieves
@@ -116,7 +123,8 @@ or another public memory system.
 ## 7. Failure Modes
 
 - No data or unrelated query: `/recall` returns empty context with `200`.
-- Missing LLM API key: extraction logs degradation and uses offline rules.
+- Missing LLM API key, provider error, or unusable structured output:
+  extraction logs degradation without secrets and uses offline rules.
 - Missing or wrong bearer token when configured: protected endpoints return
   `401` or `403`; `/health` stays open.
 - Malformed JSON, null required fields, NUL bytes, and oversized bodies:

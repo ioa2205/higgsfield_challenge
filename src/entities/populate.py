@@ -25,7 +25,7 @@ from ..extraction.draft import MemoryDraft
 # Patterns to extract the salient proper noun from a memory value string.
 # Each returns the first group as the entity name.
 _EMPLOYMENT_RE = re.compile(
-    r"works?\s+at\s+([A-Za-z0-9][A-Za-z0-9 &.'-]*?)(?:\s+as\b|$)",
+    r"works?(?:\s+as\b.*?)?\s+at\s+([A-Za-z0-9][A-Za-z0-9 &.'-]*?)(?:\s+as\b|$)",
     re.IGNORECASE,
 )
 _LOCATION_RE = re.compile(
@@ -37,7 +37,8 @@ _ORIGIN_RE = re.compile(
     re.IGNORECASE,
 )
 _PET_RE = re.compile(
-    r"has\s+a\s+(?:pet|dog|cat|puppy|kitten|hamster|rabbit|parrot|bird)\s+named\s+([A-Za-z][A-Za-z'-]*)\b",
+    r"(?:has\s+a\s+)?(?:pet|dog|cat|puppy|kitten|hamster|rabbit|parrot|bird)"
+    r"(?:\s+is)?\s+named\s+([A-Za-z][A-Za-z'-]*)\b",
     re.IGNORECASE,
 )
 

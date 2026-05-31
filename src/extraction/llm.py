@@ -22,11 +22,17 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from .. import config
 from .draft import MEMORY_TYPES
 
 logger = logging.getLogger("memory.extraction.llm")
+
+_SECRET_QUERY_PARAM = re.compile(
+    r"([?&](?:key|api_key|apikey|access_token)=)[^&\s]+",
+    re.IGNORECASE,
+)
 
 # Shared JSON schema describing the structured output we want. Kept in the
 # OpenAPI subset all three providers accept.
@@ -55,7 +61,11 @@ _SYSTEM = (
     "type ∈ {fact,preference,opinion,event}; a canonical snake/dotted slot key "
     "(employment, location, origin, pet.name, diet, allergy, "
     "preference.answer_style, opinion.<subject>, …) so the same topic always "
-    "reuses the same key; a short third-person value preserving the salient "
+    "reuses the same key. Use EXACTLY employment (not employer/job), location "
+    "(not current_city), origin (not previous_city), and pet.name (not "
+    "pet.dog.name). Use the main subject for opinion keys so an evolving stance "
+    "reuses one slot (opinion.typescript, not opinion.typescript_generics). "
+    "Write a short third-person value preserving the salient "
     "proper noun (e.g. 'Works at Notion'); and confidence in [0,1]. If a turn "
     "contains a correction ('actually, not X — Y'), emit the corrected (new) "
     "value. Return only memories actually supported by the turn; [] is valid."
@@ -89,6 +99,14 @@ def _coerce(payload: object) -> list[dict] | None:
     return [i for i in items if isinstance(i, dict)]
 
 
+def _safe_error(exc: Exception, api_key: str) -> str:
+    """Keep provider failures useful without ever logging credentials."""
+    detail = str(exc)
+    if api_key:
+        detail = detail.replace(api_key, "<redacted>")
+    return _SECRET_QUERY_PARAM.sub(r"\1<redacted>", detail)
+
+
 class LLMExtractor:
     """One configured provider. ``extract`` returns dicts or None (→ fallback)."""
 
@@ -113,7 +131,12 @@ class LLMExtractor:
                 if self.provider == "openai":
                     return self._openai(client, messages)
         except Exception as exc:  # network/timeout/parse — fall back to rules
-            logger.warning("llm extract failed (%s): %s", self.provider, exc)
+            logger.warning(
+                "llm extract failed (%s, %s): %s",
+                self.provider,
+                type(exc).__name__,
+                _safe_error(exc, self.api_key),
+            )
             return None
         return None
 
@@ -131,7 +154,11 @@ class LLMExtractor:
                 "responseSchema": _RESULT_SCHEMA,
             },
         }
-        r = client.post(url, params={"key": self.api_key}, json=body)
+        r = client.post(
+            url,
+            headers={"x-goog-api-key": self.api_key},
+            json=body,
+        )
         r.raise_for_status()
         text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
         return _coerce(json.loads(text))
@@ -175,7 +202,6 @@ class LLMExtractor:
         }
         body = {
             "model": self.model,
-            "temperature": 0,
             "tools": [fn],
             "tool_choice": {"type": "function", "function": {"name": "extract_memories"}},
             "messages": [{"role": "user", "content": _prompt(messages)}],

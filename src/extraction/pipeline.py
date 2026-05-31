@@ -20,6 +20,7 @@ with provenance so a reviewer can see which path produced each memory.
 from __future__ import annotations
 
 import logging
+import re
 
 from .. import config
 from ..logging_config import log_event
@@ -31,6 +32,48 @@ logger = logging.getLogger("memory.extraction")
 
 _VALUE_MAX = 500
 _KEY_MAX = 128
+_FACT_KEYS = {"employment", "location", "origin", "pet.name", "pet.species", "diet", "allergy"}
+_KEY_ALIASES = {
+    "company": "employment",
+    "employer": "employment",
+    "job": "employment",
+    "occupation": "employment",
+    "city": "location",
+    "current_city": "location",
+    "current_location": "location",
+    "home_city": "location",
+    "residence": "location",
+    "former_city": "origin",
+    "previous_city": "origin",
+    "previous_location": "origin",
+}
+
+
+def _canonical_key(key: str | None) -> str | None:
+    """Normalize common LLM slot aliases into the product vocabulary."""
+    if not key:
+        return None
+    key = key.replace("\x00", "").strip().lower()[:_KEY_MAX]
+    key = re.sub(r"\s+", "_", key)
+    key = _KEY_ALIASES.get(key, key)
+    if re.fullmatch(r"pets?(?:\.[^.]+)?\.name", key):
+        return "pet.name"
+    if re.fullmatch(r"pets?(?:\.[^.]+)?\.(?:species|type)", key):
+        return "pet.species"
+    return key or None
+
+
+def _canonical_value(key: str | None, value: str) -> str:
+    """Keep LLM values readable and compatible with entity population."""
+    if key == "location" and not re.search(r"\b(?:lives?|moved|located|based)\b", value, re.I):
+        return f"Lives in {value}"
+    if key == "origin" and not re.search(r"\b(?:from|previously|formerly|origin)\b", value, re.I):
+        return f"Originally from {value}"
+    if key == "allergy" and not re.search(r"\ballerg", value, re.I):
+        return f"Allergic to {value}"
+    if key == "pet.name" and not re.search(r"\bnamed\b", value, re.I):
+        return f"Has a pet named {value}"
+    return value
 
 
 def _normalize_llm(items: list[dict], provenance: str) -> list[MemoryDraft]:
@@ -43,8 +86,11 @@ def _normalize_llm(items: list[dict], provenance: str) -> list[MemoryDraft]:
         value = str(item.get("value", "")).strip()[:_VALUE_MAX]
         if not value:
             continue
-        key = item.get("key")
-        key = str(key).strip() or None if key is not None else None
+        raw_key = item.get("key")
+        key = _canonical_key(str(raw_key) if raw_key is not None else None)
+        value = _canonical_value(key, value)[:_VALUE_MAX]
+        if key in _FACT_KEYS or (key and key.startswith("family.")):
+            mtype = "fact"
         out.append(
             MemoryDraft(
                 type=mtype,
@@ -79,7 +125,8 @@ def _sanitize(drafts: list[MemoryDraft]) -> list[MemoryDraft]:
         if draft.type not in MEMORY_TYPES:
             continue
         value = draft.value.replace("\x00", "").strip()[:_VALUE_MAX]
-        key = draft.key.replace("\x00", "").strip()[:_KEY_MAX] if draft.key else None
+        key = _canonical_key(draft.key)
+        value = _canonical_value(key, value)[:_VALUE_MAX]
         if value:
             out.append(
                 MemoryDraft(

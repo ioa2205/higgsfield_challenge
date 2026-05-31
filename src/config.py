@@ -37,11 +37,14 @@ LLM_MODEL = os.environ.get("LLM_MODEL") or None
 # /turns budget. Normal LLM latency must NOT trip the rule fallback.
 LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "25"))
 
-# Current, non-retired defaults per provider (override with LLM_MODEL).
+# Current fast, production-sensible defaults per provider (override with
+# LLM_MODEL). Gemini uses Google's evergreen Flash alias so a retired concrete
+# model cannot break extraction; Anthropic and OpenAI use their current
+# fast/high-quality extraction models.
 _DEFAULT_MODELS = {
-    "gemini": "gemini-2.0-flash",
-    "anthropic": "claude-3-5-haiku-latest",
-    "openai": "gpt-4o-mini",
+    "gemini": "gemini-flash-latest",
+    "anthropic": "claude-haiku-4-5",
+    "openai": "gpt-5-mini",
 }
 # Env var names that carry each provider's key. GOOGLE_API_KEY is accepted as an
 # alias for Gemini.

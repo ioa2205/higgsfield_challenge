@@ -1,5 +1,33 @@
 # Changelog
 
+## v1.0.1 - Provider refresh + secret-safe LLM extraction
+
+**What changed:** Refreshed the optional provider path after a live Gemini audit:
+
+- Gemini now defaults to the evergreen `gemini-flash-latest` alias, currently
+  served by Gemini 3.5 Flash. Anthropic and OpenAI defaults are refreshed to
+  `claude-haiku-4-5` and `gpt-5-mini`; `LLM_MODEL` remains an override.
+- Gemini API keys are sent in the `x-goog-api-key` header rather than URL query
+  strings. Provider error logs redact configured keys and common secret query
+  parameters before emitting degradation details.
+- OpenAI requests no longer send the legacy `temperature` option, keeping the
+  structured extraction call compatible with current reasoning-capable models.
+- LLM slot aliases such as `current_city`, `pet.dog.name`, and `pet.type` are
+  canonicalized before persistence. Entity population accepts both
+  `Works at Stripe as ...` and `Works as ... at Stripe` employment phrasing,
+  plus both `Has a dog named Biscuit` and `Dog is named Biscuit` pet phrasing.
+- Provider contract tests cover current defaults, header authentication,
+  provider-specific forced structured output, redaction, canonical aliases,
+  and LLM employment entity extraction.
+
+**Verified:** Live Gemini model-registry probes confirmed Gemini 3.1 Flash-Lite,
+Gemini 3.5 Flash, and the Flash aliases. A real `gemini-flash-latest` extraction
+run stored LLM-provenance facts, linked `pet|Biscuit` and `city|Lisbon` entities,
+returned both through recall, and emitted no API key in request URLs. Final
+verification: **64 tests green**, Compose config valid, live Gemini fixture
+**EXTRACTION 8/8 (100%)** and **RECALL-CONTEXT 9/9 (100%)**, clean-user Docker
+smoke passed, and an isolated no-key Docker app proved offline rule fallback.
+
 ## v1.0 - Hardening + final tuning + docs
 
 **What changed:** The final pass adds release hardening without changing the

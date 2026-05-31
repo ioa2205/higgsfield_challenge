@@ -199,6 +199,11 @@ path — so the service is **fully offline by default** and the eval can enable 
 just providing a key. `llm.py` forces structured JSON per provider (Gemini
 `responseSchema`, Anthropic/OpenAI forced tool call) and returns `None` on any
 error/timeout (`LLM_TIMEOUT`, default 25s) so the pipeline falls back to rules.
+Defaults are `gemini-flash-latest` (evergreen Flash alias, currently Gemini 3.5
+Flash), `claude-haiku-4-5`, and `gpt-5-mini`; `LLM_MODEL` remains an override.
+Gemini authentication uses the `x-goog-api-key` header, and logged provider
+errors are redacted. LLM-produced aliases are canonicalized before persistence
+so evolution and entity linking do not depend on a provider's exact wording.
 
 ### Schema (idempotent, full product schema created in Phase 1)
 
