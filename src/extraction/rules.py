@@ -76,6 +76,13 @@ def _employment(m, corr):
     return MemoryDraft("fact", "employment", value, 0.9 if corr else 0.8)
 
 
+def _employment_retired(m, corr):
+    company = _clean(m.group("company"))
+    if not company:
+        return None
+    return MemoryDraft("fact", "employment", f"No longer works at {company}", 0.9)
+
+
 def _location(m, corr):
     city = _clean(m.group("city"))
     if not city:
@@ -198,10 +205,13 @@ _NOT_NAMES = {
 
 _RULES: list[tuple[re.Pattern, object]] = [
     # employment ----------------------------------------------------------
+    (re.compile(
+        r"\bI\s+(?:no\s+longer|don't|do\s+not|stopped)\s+(?:work|working)\s+(?:at|for)\s+(?P<company>[^.,;!?\n]+)",
+        re.IGNORECASE), _employment_retired),
     # The leading "I (am)" and an intervening adverb ("actually") are optional so
     # "...and work at Acme" / "I actually work at Notion" both match on "work at X".
     (re.compile(
-        r"\b(?:I(?:'m| am)?\s+)?(?:\w+ly\s+)?(?:an?\s+(?P<role>[\w ]+?)\s+)?(?:works?|working|employed)\s+(?:at|for)\s+(?P<company>[^.,;!?\n]+)",
+        r"\b(?:I(?:'m| am)?\s+)?(?:\w+ly\s+)?(?:an?\s+(?P<role>[\w ]+?)\s+)?(?<!no longer )(?<!don't )(?<!not )(?<!stopped )(?:works?|working|employed)\s+(?:at|for)\s+(?P<company>[^.,;!?\n]+)",
         re.IGNORECASE), _employment),
     (re.compile(
         r"\bI\s+(?:just\s+)?(?:joined|started\s+(?:at|working\s+at)?|got\s+a\s+job\s+at|moved\s+to\s+a\s+(?:job|role)\s+at)\s+(?P<company>[^.,;!?\n]+)",
@@ -213,11 +223,21 @@ _RULES: list[tuple[re.Pattern, object]] = [
         r"(?=[.,;!?\n]|\s+(?:from|last|this|a\s+few|recently|for|because|where|so|and)\b|$)",
         re.IGNORECASE), _location),
     (re.compile(
-        r"\bI(?:'m| am)?\s+(?:live|living|based|relocating|relocated)\s+in\s+(?P<city>[^.,;!?\n]+)",
+        r"\bI(?:'m| am)?\s+(?:still\s+|currently\s+)?(?:live|living|based|relocating|relocated)\s+in\s+(?P<city>[^.,;!?\n]+?)"
+        r"(?=\s+and\s+(?:I\s+)?(?:work|working|am\s+employed)\b|[.,;!?\n]|$)",
+        re.IGNORECASE), _location),
+    (re.compile(
+        r"\bnot\s+[A-Za-z][A-Za-z .'-]*?,?\s+I\s+meant\s+(?P<city>[A-Za-z][A-Za-z .'-]*?)(?=[.,;!?\n]|$)",
         re.IGNORECASE), _location),
     (re.compile(
         r"\bI(?:'m| am)\s+from\s+(?P<place>[^.,;!?\n]+)", re.IGNORECASE), _origin),
     # pets ----------------------------------------------------------------
+    # Set-valued slot: this broad form captures every "dog named X, cat named
+    # Y" mention. Identical pets are deduplicated at write time; different pet
+    # names intentionally remain active together.
+    (re.compile(
+        r"\b(?P<species>dog|cat|puppy|kitten|hamster|rabbit|parrot|bird|pet)\s+(?:is\s+)?(?:named|called)\s+(?P<name>[A-Z][\w-]*)",
+        re.IGNORECASE), _pet_explicit),
     (re.compile(
         r"\bmy\s+(?P<species>dog|cat|puppy|kitten|hamster|rabbit|parrot|bird|pet)\s+(?:is\s+)?(?:named|called)\s+(?P<name>[A-Z][\w-]*)",
         re.IGNORECASE), _pet_explicit),

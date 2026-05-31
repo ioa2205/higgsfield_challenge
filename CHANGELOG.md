@@ -1,5 +1,59 @@
 # Changelog
 
+## v1.1 - Hidden-eval robustness: deduplication, failover, adversarial fixture
+
+**What changed:**
+
+- `/turns` now suppresses unchanged non-event facts before embedding or insert.
+  The comparison runs inside the write transaction after a per-user slot
+  advisory lock, so concurrent repeats cannot create redundant chains. Value
+  normalization ignores casing, punctuation, and whitespace without removing
+  meaningful words. Events remain append-only.
+- `pet.name` is treated as a small set-valued slot: Biscuit and Mochi can remain
+  active together, while a repeated mention of Biscuit is suppressed.
+- `LLM_PROVIDER=auto` now tries configured providers in the documented order
+  Gemini -> Anthropic -> OpenAI -> offline rules. Forced modes try only the
+  selected paid provider, then rules. Auto-mode attempts divide a `45s`
+  extraction budget; forced modes retain the `25s` single-attempt timeout.
+- In auto mode, `LLM_MODEL` applies only to the first configured provider.
+  Failover attempts use provider defaults so a provider-specific model id is
+  never sent to a different API.
+- Rule extraction now handles `I still live in Lisbon`, the narrow correction
+  `Not Lisbon, I meant Porto`, `I no longer work at Stripe`, and multiple named
+  pets. Recall keyword expansion covers `employer`, `company`, `job`, and
+  `hometown`.
+- Added `fixtures/adversarial_conversations.json`, `tests/test_adversarial.py`,
+  mocked failover/timeout/malformed-output contracts, and reviewer-friendly
+  `demo.sh` / `demo.ps1`.
+
+**Why:** A live Gemini check exposed the redundant `Lisbon -> Lisbon`
+supersession chain after a repeated stable fact. The same review showed that
+auto mode stopped after the first configured provider, wasting available paid
+fallbacks before degrading to rules. The adversarial cases make both behaviors
+and nearby hidden-eval risks explicit.
+
+**Metrics:** Before this iteration: **64 tests green**, original fixture
+**EXTRACTION 8/8** and **RECALL-CONTEXT 9/9**. After implementation, focused
+verification is **54 tests green** and the full suite is **87 tests green**.
+Against the rebuilt live container, the original fixture remains
+**EXTRACTION 8/8**, **RECALL-CONTEXT 9/9**. The new adversarial fixture is
+reported separately: **EXTRACTION 9/9**, **RECALL-CONTEXT 11/11**.
+
+**Final verification:** `compileall`, `git diff --check`, and Compose config
+passed; the rebuilt app became healthy on `:8080`; the challenge smoke and
+`demo.ps1` passed. A fresh Gemini audit recorded `llm:gemini` provenance,
+one Lisbon row after repetition, Stripe -> Notion history, `pet|Biscuit`,
+`city|Lisbon`, and both employer entities, with no secret query parameters in
+logs. An isolated Docker container with no LLM keys recorded `rule` provenance
+and returned exact `Lives in Lisbon` plus `No longer works at Stripe` recall.
+Windows exposed an unusable `bash.exe` shim, so `demo.sh` could not be executed
+locally.
+
+**Deliberately rejected:** Narrowing the entity-hop fallback, confidence-aware
+evolution, and a `/metrics` endpoint. None improved the fixture or live evidence
+yet; each adds regression risk or surface area without strengthening the
+challenge contract.
+
 ## v1.0.1 - Provider refresh + secret-safe LLM extraction
 
 **What changed:** Refreshed the optional provider path after a live Gemini audit:

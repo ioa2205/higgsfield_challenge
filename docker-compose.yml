@@ -38,8 +38,8 @@ services:
       TIER3_RECENT_N: ${TIER3_RECENT_N:-5}
       RECALL_SNIPPET_MAX: ${RECALL_SNIPPET_MAX:-240}
       SUPERSESSION_SIM_THRESHOLD: ${SUPERSESSION_SIM_THRESHOLD:-0.92}
-      # Optional LLM extraction (provider-agnostic). Set ONE key to enable it;
-      # with none set, extraction uses the offline deterministic rule path.
+      # Optional LLM extraction (provider-agnostic). Auto mode tries configured
+      # keys in Gemini -> Anthropic -> OpenAI order, then falls back to rules.
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -47,6 +47,7 @@ services:
       LLM_PROVIDER: ${LLM_PROVIDER:-auto}
       LLM_MODEL: ${LLM_MODEL:-}
       LLM_TIMEOUT: ${LLM_TIMEOUT:-25}
+      LLM_AUTO_TOTAL_TIMEOUT: ${LLM_AUTO_TOTAL_TIMEOUT:-45}
       # Reject oversized requests before JSON parsing.
       MAX_REQUEST_BODY_BYTES: ${MAX_REQUEST_BODY_BYTES:-1048576}
     ports:

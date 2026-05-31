@@ -110,10 +110,17 @@ def _safe_error(exc: Exception, api_key: str) -> str:
 class LLMExtractor:
     """One configured provider. ``extract`` returns dicts or None (→ fallback)."""
 
-    def __init__(self, provider: str, api_key: str, model: str) -> None:
+    def __init__(
+        self,
+        provider: str,
+        api_key: str,
+        model: str,
+        timeout: float | None = None,
+    ) -> None:
         self.provider = provider
         self.api_key = api_key
         self.model = model
+        self.timeout = config.LLM_TIMEOUT if timeout is None else timeout
 
     def extract(self, messages: list[dict]) -> list[dict] | None:
         try:
@@ -123,7 +130,7 @@ class LLMExtractor:
             return None
 
         try:
-            with httpx.Client(timeout=config.LLM_TIMEOUT) as client:
+            with httpx.Client(timeout=self.timeout) as client:
                 if self.provider == "gemini":
                     return self._gemini(client, messages)
                 if self.provider == "anthropic":
@@ -218,7 +225,19 @@ class LLMExtractor:
 
 def get_llm_extractor() -> LLMExtractor | None:
     """Build an extractor from the live config, or None when no key is set."""
-    resolved = config.resolve_llm()
-    if not resolved:
+    extractors = get_llm_extractors()
+    if not extractors:
         return None
-    return LLMExtractor(*resolved)
+    return extractors[0]
+
+
+def get_llm_extractors() -> list[LLMExtractor]:
+    """Build the ordered provider attempts allowed by the live configuration."""
+    resolved = config.resolve_llms()
+    if not resolved:
+        return []
+    if config.LLM_PROVIDER == "auto":
+        per_attempt = min(config.LLM_TIMEOUT, config.LLM_AUTO_TOTAL_TIMEOUT / len(resolved))
+    else:
+        per_attempt = config.LLM_TIMEOUT
+    return [LLMExtractor(*item, timeout=per_attempt) for item in resolved]

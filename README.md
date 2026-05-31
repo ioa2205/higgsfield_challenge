@@ -63,12 +63,22 @@ paraphrases and nuanced relationships outside those patterns; the optional LLM
 path is the broader extractor. The event fallback is labeled honestly and is
 not presented as a structured fact.
 
-`LLM_PROVIDER=auto` selects the first configured provider. The current defaults
-are `gemini-flash-latest` (the evergreen Gemini Flash alias, currently Gemini
-3.5 Flash), `claude-haiku-4-5`, and `gpt-5-mini`; `LLM_MODEL` can override any
-of them. Provider API keys are sent in headers, never URL query strings.
-LLM-produced aliases such as `current_city`, `pet.dog.name`, and `pet.type` are
-normalized back into the canonical slots before evolution and entity linking.
+`LLM_PROVIDER=auto` tries configured providers in this order:
+**Gemini -> Anthropic -> OpenAI -> offline rules**. Forced modes such as
+`LLM_PROVIDER=gemini` try only that paid provider, then rules. The defaults are
+`gemini-flash-latest` (the evergreen Gemini Flash alias, currently Gemini 3.5
+Flash), `claude-haiku-4-5`, and `gpt-5-mini`. In a forced mode, `LLM_MODEL`
+overrides that provider. In auto mode, the override applies only to the first
+configured provider; failover providers use their own defaults so a
+Gemini-specific id is never sent to Anthropic or OpenAI.
+
+Forced modes use `LLM_TIMEOUT` (default `25s`) for their single attempt. Auto
+mode divides `LLM_AUTO_TOTAL_TIMEOUT` (default `45s`) across configured
+providers, capped by `LLM_TIMEOUT`, leaving room for local embedding and the
+database transaction inside the challenge's `60s` `/turns` budget. Provider
+API keys are sent in headers, never URL query strings. LLM-produced aliases
+such as `current_city`, `pet.dog.name`, and `pet.type` are normalized before
+evolution and entity linking.
 
 ## 4. Recall Strategy
 
@@ -107,6 +117,19 @@ Corrections use the same mechanism. Opinion changes are modeled as a preserved
 chain: the latest stance is active while earlier stances remain inspectable.
 This captures an opinion arc without flattening history into one opaque blob.
 
+Before embedding or insertion, `/turns` locks the user's canonical slot inside
+the write transaction and suppresses an unchanged non-event memory when its
+normalized value matches the active row. Normalization ignores casing,
+punctuation, and whitespace but keeps meaningful words intact. Repeating
+`I still live in Lisbon` therefore creates no row or supersession link, while
+`I moved to Porto` preserves the Lisbon -> Porto history. Events stay
+append-only.
+
+`pet.name` is the one set-valued slot: multiple pets such as Biscuit and Mochi
+remain active together, while repeated mentions of the same named pet are
+deduplicated. Renaming a pet is not inferred automatically because a name-only
+statement does not identify which existing pet changed.
+
 ## 6. Tradeoffs
 
 The design optimizes for synchronous correctness, understandable ranking, and
@@ -120,11 +143,18 @@ general graph engine. RRF and the noise gate favor predictable recall over a
 larger reranker dependency. This is our own design, not a clone of mem0, Honcho,
 or another public memory system.
 
+Three tempting additions were evaluated and left out: narrowing entity-hop's
+small user-scoped fallback risks breaking Biscuit -> Lisbon recall without a
+measured quality gain; confidence-aware evolution risks blocking valid explicit
+updates such as Stripe -> Notion; and a `/metrics` endpoint adds surface area
+without improving the structured logs or challenge behavior.
+
 ## 7. Failure Modes
 
 - No data or unrelated query: `/recall` returns empty context with `200`.
 - Missing LLM API key, provider error, or unusable structured output:
-  extraction logs degradation without secrets and uses offline rules.
+  extraction tries the allowed failover sequence, logs safe details without
+  secrets, and uses offline rules.
 - Missing or wrong bearer token when configured: protected endpoints return
   `401` or `403`; `/health` stays open.
 - Malformed JSON, null required fields, NUL bytes, and oversized bodies:
@@ -148,7 +178,14 @@ Clean-machine service flow:
 ```bash
 docker compose up -d
 until curl -sf localhost:8080/health; do sleep 1; done
-./smoke.sh
+bash smoke.sh
+bash demo.sh
+```
+
+On Windows PowerShell, run the equivalent reviewer demo with:
+
+```powershell
+.\demo.ps1
 ```
 
 Host suite against the Dockerized database:
@@ -167,3 +204,6 @@ missing-key and restart-mid-write tests. Run the live real-embedder fixture with
 ```bash
 .venv/Scripts/python tests/fixture_runner.py --live
 ```
+
+The live runner prints the original fixture and the compact adversarial fixture
+separately so the original metric remains comparable across iterations.

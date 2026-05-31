@@ -6,6 +6,8 @@ Called synchronously inside the /turns transaction so the effect is visible to
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 import uuid
 
 import asyncpg
@@ -16,6 +18,33 @@ from ..extraction.draft import MemoryDraft
 from ..logging_config import log_event
 
 logger = logging.getLogger("memory.evolution")
+
+
+def normalized_memory_value(key: str | None, value: str) -> str:
+    """Normalize harmless presentation differences without erasing meaning."""
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    if key == "pet.name":
+        match = re.search(r"\bnamed\s+([a-z][a-z'-]*)\b", normalized)
+        if match:
+            return f"named {match.group(1)}"
+    normalized = re.sub(r"[^\w]+", " ", normalized, flags=re.UNICODE)
+    return " ".join(normalized.split())
+
+
+async def is_unchanged_active_memory(
+    conn: asyncpg.Connection,
+    draft: MemoryDraft,
+    user_id: str,
+) -> bool:
+    """Return True when an equivalent active non-event slot already exists."""
+    if draft.type == "event" or not draft.key:
+        return False
+    expected = normalized_memory_value(draft.key, draft.value)
+    rows = await queries.find_active_by_key(conn, user_id, draft.key)
+    return any(
+        normalized_memory_value(draft.key, row["value"]) == expected
+        for row in rows
+    )
 
 
 async def apply_supersession(
@@ -41,6 +70,12 @@ async def apply_supersession(
     """
     if draft.type == "event":
         return  # events are ephemeral; no supersession
+
+    # A user can have multiple pets. Keep pet names append-only as a small
+    # set-valued exception; the pre-insert duplicate check still suppresses
+    # repeated mentions of the same pet.
+    if draft.key == "pet.name":
+        return
 
     old_id: uuid.UUID | None = None
 

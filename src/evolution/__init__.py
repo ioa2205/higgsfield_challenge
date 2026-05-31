@@ -23,6 +23,6 @@ inspectable via /users/{id}/memories.
 
 Entry point: ``apply_supersession(conn, draft, new_memory_id, user_id, embedding)``.
 """
-from .supersede import apply_supersession
+from .supersede import apply_supersession, is_unchanged_active_memory
 
-__all__ = ["apply_supersession"]
+__all__ = ["apply_supersession", "is_unchanged_active_memory"]

@@ -96,7 +96,7 @@ def test_rule_fallback_when_llm_errors(client, user_id):
             return None  # simulate timeout/error
 
     with patch(
-        "src.extraction.pipeline.get_llm_extractor", return_value=_FailingExtractor()
+        "src.extraction.pipeline.get_llm_extractors", return_value=[_FailingExtractor()]
     ):
         _ingest(client, user_id, "I live in Berlin and work at Acme.")
 
@@ -104,6 +104,8 @@ def test_rule_fallback_when_llm_errors(client, user_id):
     keys = {m["key"] for m in mems}
     assert "location" in keys and "employment" in keys
     assert all(m["provenance"].startswith("rule") for m in mems)
+    locations = [m["value"] for m in mems if m["key"] == "location"]
+    assert locations == ["Lives in Berlin"]
 
 
 def test_llm_result_is_used_when_available(client, user_id):
@@ -124,7 +126,7 @@ def test_llm_result_is_used_when_available(client, user_id):
             ]
 
     with patch(
-        "src.extraction.pipeline.get_llm_extractor", return_value=_StubExtractor()
+        "src.extraction.pipeline.get_llm_extractors", return_value=[_StubExtractor()]
     ):
         _ingest(client, user_id, "some text the rules would parse differently")
 

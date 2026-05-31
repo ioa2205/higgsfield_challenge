@@ -18,6 +18,17 @@ from ..db import queries
 from .decompose import entity_hop_candidates
 
 
+def expand_recall_query(query: str) -> str:
+    """Add a few slot synonyms for deterministic keyword recall."""
+    lower = query.lower()
+    additions: list[str] = []
+    if any(word in lower for word in ("employer", "company", " job", "workplace")):
+        additions.extend(["work", "employment"])
+    if "hometown" in lower or "home town" in lower:
+        additions.extend(["origin", "originally"])
+    return " ".join([query, *additions])
+
+
 @dataclass
 class Candidates:
     tier1: list[dict]      # active stable facts (digest), confidence-ordered
@@ -39,7 +50,9 @@ async def gather_candidates(
     connection (asyncpg forbids concurrent queries on one connection)."""
     tier1 = await queries.tier1_facts(conn, user_id)
     semantic = await queries.semantic_recall(conn, user_id, embedding, config.SEM_TOP_N)
-    keyword = await queries.keyword_recall(conn, user_id, query, config.KW_TOP_N)
+    keyword = await queries.keyword_recall(
+        conn, user_id, expand_recall_query(query), config.KW_TOP_N
+    )
     recent = await queries.recent_session_events(conn, session_id, config.TIER3_RECENT_N)
     # Phase 4: entity-hop for multi-hop queries (no-op when no entity matches).
     hop = await entity_hop_candidates(conn, user_id, query)

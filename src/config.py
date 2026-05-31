@@ -24,11 +24,12 @@ EMBED_CACHE_DIR = os.environ.get("EMBED_CACHE_DIR", "/models")
 # Phase 2 extracts typed memories with an LLM when an API key is present, and
 # falls back to deterministic rules otherwise (or on any LLM error/timeout).
 # The LLM layer is provider-agnostic: Gemini (default/primary), Anthropic, or
-# OpenAI. Selection is `LLM_PROVIDER` (auto = pick by whichever key is set).
+# OpenAI. Selection is `LLM_PROVIDER` (auto = try every configured provider in
+# documented order until one works).
 #
-# The core service stays fully offline: with no key set, `resolve_llm()`
-# returns None and extraction uses the rule path. The eval harness can enable
-# the LLM by providing a key (see .env.example) without any code change.
+# The core service stays fully offline: with no key set, `resolve_llms()`
+# returns [] and extraction uses the rule path. The eval harness can enable the
+# LLM by providing keys (see .env.example) without any code change.
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "auto").strip().lower()
 # Optional explicit model override; otherwise a current per-provider default is
 # used (see _DEFAULT_MODELS). Kept configurable so a retired id is one env away.
@@ -36,6 +37,11 @@ LLM_MODEL = os.environ.get("LLM_MODEL") or None
 # Generous budget: a safety net for hangs/failures, well inside the §3 60s
 # /turns budget. Normal LLM latency must NOT trip the rule fallback.
 LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "25"))
+# Auto mode may make several sequential paid-provider attempts. Divide this
+# total extraction budget across the configured providers so /turns retains
+# time for local embedding and its DB transaction inside the 60-second harness
+# deadline. Forced modes make one attempt and use LLM_TIMEOUT unchanged.
+LLM_AUTO_TOTAL_TIMEOUT = float(os.environ.get("LLM_AUTO_TOTAL_TIMEOUT", "45"))
 
 # Current fast, production-sensible defaults per provider (override with
 # LLM_MODEL). Gemini uses Google's evergreen Flash alias so a retired concrete
@@ -63,27 +69,37 @@ def _key_for(provider: str) -> str | None:
     return None
 
 
-def resolve_llm() -> tuple[str, str, str] | None:
-    """Resolve (provider, api_key, model) for LLM extraction, or None.
+def resolve_llms() -> list[tuple[str, str, str]]:
+    """Resolve configured providers as ordered (provider, api_key, model) tuples.
 
     Read live (not cached at import) so tests/the eval can toggle keys between
-    app instances. Returns None when no usable provider/key is configured, which
-    is the signal for the pipeline to use the deterministic rule path.
+    app instances. Auto mode returns every configured provider in failover
+    order. Forced modes return at most the selected provider.
+
+    A single LLM_MODEL override is applied to the first auto-mode attempt only;
+    failover providers use their own defaults so a Gemini-specific model id is
+    never sent to Anthropic or OpenAI. In a forced mode, the override applies
+    to that explicitly selected provider as before.
     """
     if LLM_PROVIDER in ("none", "off", "disabled", "fake"):
-        return None
+        return []
 
-    order = (
-        [LLM_PROVIDER]
-        if LLM_PROVIDER in _PROVIDER_KEYS
-        else ["gemini", "anthropic", "openai"]  # auto: first key wins
-    )
+    forced = LLM_PROVIDER in _PROVIDER_KEYS
+    order = [LLM_PROVIDER] if forced else ["gemini", "anthropic", "openai"]
+    resolved: list[tuple[str, str, str]] = []
     for provider in order:
         key = _key_for(provider)
         if key:
-            model = LLM_MODEL or _DEFAULT_MODELS[provider]
-            return provider, key, model
-    return None
+            use_override = forced or not resolved
+            model = LLM_MODEL if use_override and LLM_MODEL else _DEFAULT_MODELS[provider]
+            resolved.append((provider, key, model))
+    return resolved
+
+
+def resolve_llm() -> tuple[str, str, str] | None:
+    """Backwards-compatible first configured provider resolver."""
+    resolved = resolve_llms()
+    return resolved[0] if resolved else None
 
 
 # --- Recall: hybrid retrieval + RRF + tiered assembly (Phase 3) ------------

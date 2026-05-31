@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import uuid
 
+from src.evolution.supersede import normalized_memory_value
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # helpers
@@ -181,6 +183,77 @@ class TestLocationEvolution:
 # ─────────────────────────────────────────────────────────────────────────────
 # Opinion arc
 # ─────────────────────────────────────────────────────────────────────────────
+
+class TestDuplicateSuppression:
+
+    def test_repeated_location_does_not_create_history(self, client):
+        uid = "u-dedup-loc-" + uuid.uuid4().hex[:8]
+        client.delete(f"/users/{uid}")
+
+        client.post("/turns", json=_turn(uid, "s1", "I live in Lisbon."))
+        client.post("/turns", json=_turn(uid, "s2", "I live in Lisbon."))
+
+        mems = _memories_by_key(client, uid, "location")
+        assert len(mems) == 1
+        assert mems[0]["active"] is True
+        assert mems[0]["supersedes"] is None
+
+    def test_still_live_location_does_not_create_history(self, client):
+        uid = "u-dedup-still-" + uuid.uuid4().hex[:8]
+        client.delete(f"/users/{uid}")
+
+        client.post("/turns", json=_turn(uid, "s1", "I live in Lisbon."))
+        client.post("/turns", json=_turn(uid, "s2", "I still live in Lisbon."))
+
+        mems = _memories_by_key(client, uid, "location")
+        assert len(mems) == 1
+        assert mems[0]["active"] is True
+
+    def test_moved_location_still_supersedes(self, client):
+        uid = "u-dedup-move-" + uuid.uuid4().hex[:8]
+        client.delete(f"/users/{uid}")
+
+        client.post("/turns", json=_turn(uid, "s1", "I live in Lisbon."))
+        client.post("/turns", json=_turn(uid, "s2", "I moved to Porto."))
+
+        mems = _memories_by_key(client, uid, "location")
+        assert len(mems) == 2
+        assert len(_active(mems)) == 1
+        assert "porto" in _active(mems)[0]["value"].lower()
+        assert "lisbon" in _inactive(mems)[0]["value"].lower()
+
+    def test_repeated_employment_does_not_create_history(self, client):
+        uid = "u-dedup-emp-" + uuid.uuid4().hex[:8]
+        client.delete(f"/users/{uid}")
+
+        client.post("/turns", json=_turn(uid, "s1", "I work at Stripe."))
+        client.post("/turns", json=_turn(uid, "s2", "I work at Stripe."))
+
+        mems = _memories_by_key(client, uid, "employment")
+        assert len(mems) == 1
+        assert mems[0]["active"] is True
+        assert mems[0]["supersedes"] is None
+
+    def test_normalization_ignores_presentation_not_meaning(self):
+        assert normalized_memory_value("location", " Lives in Lisbon. ") == \
+            normalized_memory_value("location", "lives  in LISBON!")
+        assert normalized_memory_value("location", "Lives in Lisbon") != \
+            normalized_memory_value("location", "Lives in Porto")
+
+    def test_duplicate_fact_is_not_embedded_twice(self, client, monkeypatch):
+        uid = "u-dedup-embed-" + uuid.uuid4().hex[:8]
+        client.delete(f"/users/{uid}")
+        calls = []
+
+        async def fake_embed(request, text):
+            calls.append(text)
+            return [0.0] * 384
+
+        monkeypatch.setattr("src.api.routes._embed", fake_embed)
+        client.post("/turns", json=_turn(uid, "s1", "I live in Lisbon."))
+        client.post("/turns", json=_turn(uid, "s2", "I still live in Lisbon."))
+        assert calls == ["Lives in Lisbon"]
+
 
 class TestOpinionArc:
 

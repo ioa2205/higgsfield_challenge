@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Request, Response
 
 from ..db import queries
 from ..entities import populate_entities
-from ..evolution import apply_supersession
+from ..evolution import apply_supersession, is_unchanged_active_memory
 from ..extraction import extract_memories
 from ..logging_config import log_event
 from ..recall import run_recall
@@ -82,9 +82,6 @@ async def post_turn(body: TurnRequest, request: Request) -> TurnResponse:
         extraction=",".join(paths) or "none",
     )
 
-    # Embed each draft (CPU-bound -> threadpool) before opening the connection.
-    embeddings = [await _embed(request, d.value) for d in drafts]
-
     async with pool.acquire() as conn:
         async with conn.transaction():
             await queries.insert_turn(conn, turn_id, user_id, body.session_id)
@@ -99,7 +96,26 @@ async def post_turn(body: TurnRequest, request: Request) -> TurnResponse:
                     msg.name,
                     msg.content,
                 )
-            for draft, embedding in zip(drafts, embeddings):
+            stored = 0
+            skipped = 0
+            for draft in drafts:
+                if draft.type != "event" and draft.key:
+                    await queries.lock_memory_slot(conn, user_id, draft.key)
+                if await is_unchanged_active_memory(conn, draft, user_id):
+                    skipped += 1
+                    log_event(
+                        logger,
+                        "memory.duplicate_suppressed",
+                        turn_id=str(turn_id),
+                        user_id=user_id,
+                        key=draft.key,
+                    )
+                    continue
+
+                # Avoid embedding unchanged facts. The slot lock and duplicate
+                # check stay inside the transaction so concurrent repeats are
+                # serialized before either row can be inserted.
+                embedding = await _embed(request, draft.value)
                 mem_id = await queries.insert_memory(
                     conn,
                     user_id=user_id,
@@ -116,6 +132,16 @@ async def post_turn(body: TurnRequest, request: Request) -> TurnResponse:
                 # register entity links for the new memory.
                 await apply_supersession(conn, draft, mem_id, user_id, embedding)
                 await populate_entities(conn, mem_id, draft, user_id)
+                stored += 1
+
+    log_event(
+        logger,
+        "turn.memories_persisted",
+        turn_id=str(turn_id),
+        user_id=user_id,
+        stored=stored,
+        duplicate_suppressed=skipped,
+    )
 
     return TurnResponse(id=str(turn_id))
 

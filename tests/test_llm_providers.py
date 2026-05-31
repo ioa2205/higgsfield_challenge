@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import json
 
+import httpx
+
 from src import config
 from src.entities.populate import _entities_from_draft
 from src.extraction.draft import MemoryDraft
-from src.extraction.llm import LLMExtractor, _safe_error
-from src.extraction.pipeline import _normalize_llm
+from src.extraction.llm import LLMExtractor, _safe_error, get_llm_extractors
+from src.extraction.pipeline import _normalize_llm, extract
 
 MESSAGES = [{"role": "user", "content": "I live in Berlin."}]
 SECRET = "secret-provider-key"
@@ -32,6 +34,23 @@ class _Client:
     def post(self, url, **kwargs):
         self.calls.append({"url": url, **kwargs})
         return _Response(self.response)
+
+
+class _StubExtractor:
+    def __init__(self, provider, result, calls):
+        self.provider = provider
+        self.model = f"{provider}-model"
+        self.timeout = 1.0
+        self._result = result
+        self._calls = calls
+
+    def extract(self, messages):
+        self._calls.append(self.provider)
+        return self._result
+
+
+def _location(value):
+    return [{"type": "fact", "key": "location", "value": value, "confidence": 0.9}]
 
 
 def test_current_provider_defaults():
@@ -141,3 +160,139 @@ def test_entity_population_accepts_llm_pet_wording():
     assert _entities_from_draft(
         MemoryDraft("fact", "pet.name", "Dog is named Biscuit", 0.9)
     ) == [("pet", "Biscuit", "pet_of")]
+
+
+def test_auto_gemini_success_stops_failover(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "src.extraction.pipeline.get_llm_extractors",
+        lambda: [
+            _StubExtractor("gemini", _location("Lives in Lisbon"), calls),
+            _StubExtractor("anthropic", _location("Lives in Porto"), calls),
+            _StubExtractor("openai", _location("Lives in Berlin"), calls),
+        ],
+    )
+    drafts = extract(MESSAGES)
+    assert calls == ["gemini"]
+    assert drafts[0].provenance == "llm:gemini"
+
+
+def test_auto_gemini_failure_anthropic_success(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "src.extraction.pipeline.get_llm_extractors",
+        lambda: [
+            _StubExtractor("gemini", None, calls),
+            _StubExtractor("anthropic", _location("Lives in Porto"), calls),
+            _StubExtractor("openai", _location("Lives in Berlin"), calls),
+        ],
+    )
+    drafts = extract(MESSAGES)
+    assert calls == ["gemini", "anthropic"]
+    assert drafts[0].provenance == "llm:anthropic"
+
+
+def test_auto_gemini_and_anthropic_failure_openai_success(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "src.extraction.pipeline.get_llm_extractors",
+        lambda: [
+            _StubExtractor("gemini", None, calls),
+            _StubExtractor("anthropic", None, calls),
+            _StubExtractor("openai", _location("Lives in Berlin"), calls),
+        ],
+    )
+    drafts = extract(MESSAGES)
+    assert calls == ["gemini", "anthropic", "openai"]
+    assert drafts[0].provenance == "llm:openai"
+
+
+def test_all_configured_providers_fail_rules_run(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "src.extraction.pipeline.get_llm_extractors",
+        lambda: [
+            _StubExtractor("gemini", None, calls),
+            _StubExtractor("anthropic", None, calls),
+            _StubExtractor("openai", None, calls),
+        ],
+    )
+    drafts = extract([{"role": "user", "content": "I live in Lisbon."}])
+    assert calls == ["gemini", "anthropic", "openai"]
+    assert drafts[0].value == "Lives in Lisbon"
+    assert drafts[0].provenance == "rule"
+
+
+def test_forced_gemini_resolves_only_gemini(monkeypatch):
+    monkeypatch.setattr(config, "LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    assert [item[0] for item in config.resolve_llms()] == ["gemini"]
+
+
+def test_no_configured_keys_uses_rules_without_network(monkeypatch):
+    monkeypatch.setattr(config, "LLM_PROVIDER", "auto")
+    for name in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+
+    called = False
+
+    def fail_if_called(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("network client must not be constructed")
+
+    monkeypatch.setattr(httpx, "Client", fail_if_called)
+    drafts = extract([{"role": "user", "content": "I live in Lisbon."}])
+    assert called is False
+    assert drafts[0].provenance == "rule"
+
+
+def test_auto_model_override_applies_only_to_first_provider(monkeypatch):
+    monkeypatch.setattr(config, "LLM_PROVIDER", "auto")
+    monkeypatch.setattr(config, "LLM_MODEL", "gemini-custom")
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    assert [(p, model) for p, _, model in config.resolve_llms()] == [
+        ("gemini", "gemini-custom"),
+        ("anthropic", "claude-haiku-4-5"),
+        ("openai", "gpt-5-mini"),
+    ]
+
+
+def test_auto_timeout_budget_is_divided_across_attempts(monkeypatch):
+    monkeypatch.setattr(config, "LLM_PROVIDER", "auto")
+    monkeypatch.setattr(config, "LLM_TIMEOUT", 25.0)
+    monkeypatch.setattr(config, "LLM_AUTO_TOTAL_TIMEOUT", 45.0)
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    assert [extractor.timeout for extractor in get_llm_extractors()] == [15.0, 15.0, 15.0]
+
+
+def test_malformed_llm_output_runs_rules(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "src.extraction.pipeline.get_llm_extractors",
+        lambda: [_StubExtractor("gemini", [{"type": "invalid"}], calls)],
+    )
+    drafts = extract([{"role": "user", "content": "I live in Lisbon."}])
+    assert calls == ["gemini"]
+    assert drafts[0].value == "Lives in Lisbon"
+    assert drafts[0].provenance == "rule"
+
+
+def test_provider_timeout_runs_rules_and_logs_no_secret(monkeypatch, caplog):
+    secret = "timeout-secret-key"
+
+    class _TimeoutClient:
+        def __init__(self, **kwargs):
+            raise httpx.TimeoutException(f"https://example.test/run?key={secret}")
+
+    monkeypatch.setattr(httpx, "Client", _TimeoutClient)
+    extractor = LLMExtractor("gemini", secret, "gemini-flash-latest", timeout=0.1)
+    assert extractor.extract(MESSAGES) is None
+    assert secret not in caplog.text
+    assert "key=<redacted>" in caplog.text

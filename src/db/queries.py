@@ -324,6 +324,28 @@ async def find_active_by_key(
     )
 
 
+async def lock_memory_slot(
+    conn: asyncpg.Connection,
+    user_id: str,
+    key: str,
+) -> None:
+    """Serialize writes to one user's canonical memory slot.
+
+    The lock is released automatically with the caller's transaction. This
+    keeps a concurrent pair of identical writes from both passing the
+    pre-insert duplicate check.
+    """
+    await conn.execute(
+        """
+        SELECT pg_advisory_xact_lock(
+            hashtextextended($1 || chr(31) || $2, 0)
+        )
+        """,
+        user_id,
+        key,
+    )
+
+
 async def find_active_by_type_and_embedding(
     conn: asyncpg.Connection,
     user_id: str,

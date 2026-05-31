@@ -1,0 +1,125 @@
+{
+  "_about": "Compact hidden-eval-style extension. Run separately from conversations.json so the original fixture metric remains comparable across iterations.",
+  "scenarios": [
+    {
+      "id": "duplicate-unchanged",
+      "user_id": "adv-dedup",
+      "category": "dedup",
+      "conversations": [
+        {
+          "session_id": "adv-dedup-s1",
+          "messages": [{"role": "user", "content": "I live in Lisbon."}]
+        },
+        {
+          "session_id": "adv-dedup-s2",
+          "messages": [{"role": "user", "content": "I still live in Lisbon."}]
+        }
+      ],
+      "probes": [
+        {"query": "Where does the user live?", "expect": ["Lisbon"], "category": "dedup"}
+      ]
+    },
+    {
+      "id": "location-correction",
+      "user_id": "adv-correction",
+      "category": "correction",
+      "conversations": [
+        {
+          "session_id": "adv-correction-s1",
+          "messages": [{"role": "user", "content": "I live in Lisbon."}]
+        },
+        {
+          "session_id": "adv-correction-s2",
+          "messages": [{"role": "user", "content": "Not Lisbon, I meant Porto."}]
+        }
+      ],
+      "probes": [
+        {"query": "Where does the user live now?", "expect": ["Porto"], "category": "correction"}
+      ]
+    },
+    {
+      "id": "employment-retirement",
+      "user_id": "adv-retirement",
+      "category": "negation",
+      "conversations": [
+        {
+          "session_id": "adv-retirement-s1",
+          "messages": [{"role": "user", "content": "I work at Stripe."}]
+        },
+        {
+          "session_id": "adv-retirement-s2",
+          "messages": [{"role": "user", "content": "I no longer work at Stripe."}]
+        }
+      ],
+      "probes": [
+        {"query": "Who is the user's employer?", "expect": ["No longer works at Stripe"], "category": "negation"}
+      ]
+    },
+    {
+      "id": "multiple-pets",
+      "user_id": "adv-pets",
+      "category": "pets",
+      "conversations": [
+        {
+          "session_id": "adv-pets-s1",
+          "messages": [{"role": "user", "content": "I have a dog named Biscuit and a cat named Mochi."}]
+        }
+      ],
+      "probes": [
+        {"query": "What are the names of the user's pets?", "expect": ["Biscuit", "Mochi"], "category": "pets"}
+      ]
+    },
+    {
+      "id": "tool-turn",
+      "user_id": "adv-tool",
+      "category": "tool",
+      "conversations": [
+        {
+          "session_id": "adv-tool-s1",
+          "messages": [
+            {"role": "tool", "name": "calendar", "content": "Calendar result: dentist appointment Friday at 15:00."}
+          ]
+        }
+      ],
+      "probes": [
+        {
+          "query": "What appointment did the calendar tool report?",
+          "expect": ["dentist"],
+          "extract_expect": [],
+          "category": "tool"
+        }
+      ]
+    },
+    {
+      "id": "query-synonyms",
+      "user_id": "adv-synonyms",
+      "category": "synonym",
+      "conversations": [
+        {
+          "session_id": "adv-synonyms-s1",
+          "messages": [{"role": "user", "content": "I work at Linear. I'm from Tashkent."}]
+        }
+      ],
+      "probes": [
+        {"query": "Who is the user's employer?", "expect": ["Linear"], "category": "synonym"},
+        {"query": "What company is the user at?", "expect": ["Linear"], "category": "synonym"},
+        {"query": "What is the user's job?", "expect": ["Linear"], "category": "synonym"},
+        {"query": "What is the user's hometown?", "expect": ["Tashkent"], "category": "synonym"}
+      ]
+    },
+    {
+      "id": "unrelated-query",
+      "user_id": "adv-noise",
+      "category": "noise",
+      "conversations": [
+        {
+          "session_id": "adv-noise-s1",
+          "messages": [{"role": "user", "content": "I work at Stripe."}]
+        }
+      ],
+      "probes": [
+        {"query": "What shoe size does the user wear?", "expect": [], "expect_empty": true, "category": "noise"}
+      ]
+    }
+  ]
+}

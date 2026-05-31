@@ -24,6 +24,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "conversations.json"
+ADVERSARIAL_FIXTURES = (
+    Path(__file__).resolve().parents[1] / "fixtures" / "adversarial_conversations.json"
+)
 
 
 def load_fixtures(path: Path = FIXTURES) -> dict:
@@ -113,10 +116,11 @@ def run_fixtures(client, data: dict | None = None) -> Report:
 
         for probe in scenario["probes"]:
             expect = probe.get("expect", [])
+            extract_expect = probe.get("extract_expect", expect)
             expect_empty = probe.get("expect_empty", False)
             recall_expected = probe.get("recall_expected", True)
 
-            ext_hits, ext_missing = _found(expect, mem_blob)
+            ext_hits, ext_missing = _found(extract_expect, mem_blob)
 
             recall = client.post(
                 "/recall",
@@ -136,7 +140,7 @@ def run_fixtures(client, data: dict | None = None) -> Report:
             else:
                 rec_hits, rec_missing = _found(expect, context)
                 rec_total = len(expect)
-                ext_total = len(expect)
+                ext_total = len(extract_expect)
 
             report.probes.append(
                 ProbeResult(
@@ -217,6 +221,12 @@ class _LiveClient:
 def main() -> None:
     import sys
 
+    def print_reports(client) -> None:
+        print("[original fixture]")
+        print(format_report(run_fixtures(client)))
+        print("\n[adversarial fixture]")
+        print(format_report(run_fixtures(client, load_fixtures(ADVERSARIAL_FIXTURES))))
+
     if "--live" in sys.argv:
         base = os.environ.get("MEMORY_URL", "http://localhost:8080")
         token = os.environ.get("MEMORY_AUTH_TOKEN") or None
@@ -224,9 +234,8 @@ def main() -> None:
             sys.stdout.reconfigure(encoding="utf-8")
         except (AttributeError, ValueError):
             pass
-        report = run_fixtures(_LiveClient(base, token))
         print(f"[live @ {base}]")
-        print(format_report(report))
+        print_reports(_LiveClient(base, token))
         return
 
     # Spin up the in-process app exactly like the test suite.
@@ -253,8 +262,7 @@ def main() -> None:
     from conftest import build_client_cm  # tests/conftest.py
 
     with build_client_cm() as client:
-        report = run_fixtures(client)
-        print(format_report(report))
+        print_reports(client)
 
 
 if __name__ == "__main__":

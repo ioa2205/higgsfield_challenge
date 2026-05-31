@@ -25,7 +25,7 @@ import re
 from .. import config
 from ..logging_config import log_event
 from .draft import MEMORY_TYPES, MemoryDraft, clamp_confidence
-from .llm import get_llm_extractor
+from .llm import get_llm_extractors
 from .rules import _user_text, rule_extract
 
 logger = logging.getLogger("memory.extraction")
@@ -145,26 +145,48 @@ def extract(messages: list[dict]) -> list[MemoryDraft]:
     drafts: list[MemoryDraft] = []
     path = "rule"
 
-    extractor = get_llm_extractor()
-    if extractor is not None:
+    extractors = get_llm_extractors()
+    for extractor in extractors:
+        log_event(
+            logger,
+            "extraction.provider_attempt",
+            provider=extractor.provider,
+            model=getattr(extractor, "model", None),
+            timeout=getattr(extractor, "timeout", None),
+        )
         items = extractor.extract(messages)  # None on error/timeout
         if items:
             drafts = _normalize_llm(items, provenance=f"llm:{extractor.provider}")
-            path = f"llm:{extractor.provider}"
-        else:
-            log_event(
-                logger,
-                "extraction.degraded",
-                reason="llm_failed_or_empty",
-                provider=extractor.provider,
-            )
-    else:
+            if drafts:
+                path = f"llm:{extractor.provider}"
+                log_event(
+                    logger,
+                    "extraction.provider_success",
+                    provider=extractor.provider,
+                    n_memories=len(drafts),
+                )
+                break
+        log_event(
+            logger,
+            "extraction.provider_failed",
+            provider=extractor.provider,
+            reason="failed_empty_or_unusable_output",
+        )
+
+    if not extractors:
         reason = (
             "llm_disabled"
             if config.LLM_PROVIDER in ("none", "off", "disabled", "fake")
             else "api_key_missing"
         )
         log_event(logger, "extraction.degraded", reason=reason)
+    elif not drafts:
+        log_event(
+            logger,
+            "extraction.degraded",
+            reason="all_configured_providers_failed",
+            providers=[extractor.provider for extractor in extractors],
+        )
 
     if not drafts:  # no LLM, LLM failed, or LLM returned nothing usable
         drafts = rule_extract(messages)
