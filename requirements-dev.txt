@@ -1,0 +1,12 @@
+# Test/dev dependencies (host-side).
+#
+# The test suite uses the deterministic "fake" embedder (EMBED_BACKEND=fake),
+# so it needs neither fastembed nor the model download nor uvicorn -- only a
+# reachable Postgres (the `db` compose service on localhost:5432). This minimal
+# set keeps host setup fast and fully offline.
+fastapi==0.115.6
+asyncpg==0.30.0
+pgvector==0.3.6
+numpy==2.2.1
+pytest==8.3.4
+httpx==0.28.1

@@ -1,0 +1,2 @@
+# Recall-quality fixtures (scripted conversations + probe queries) land here in
+# Phase 2, alongside tests/fixture_runner.py. Empty in Phase 1 by design.

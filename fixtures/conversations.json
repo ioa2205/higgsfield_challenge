@@ -1,0 +1,144 @@
+{
+  "_about": "Recall-quality fixture for the memory service. Each scenario is a set of multi-session conversations ingested via POST /turns, plus probe queries. Each probe lists the substrings ('expect') that should appear (a) as a typed memory value in GET /users/{id}/memories (EXTRACTION metric) and (b) in the POST /recall context (RECALL-CONTEXT metric). 'recall_expected:false' marks probes whose RECALL is a known Phase-2 gap (fact evolution, multi-hop, noise) — those need supersession / entity-graph / thresholding built in later phases; their EXTRACTION is still expected to pass now. Data only — no logic. See tests/fixture_runner.py.",
+  "scenarios": [
+    {
+      "id": "basic-recall",
+      "user_id": "fix-basic",
+      "category": "basic",
+      "description": "Plain personal facts stated explicitly across one session.",
+      "conversations": [
+        {
+          "session_id": "fix-basic-s1",
+          "messages": [
+            {"role": "user", "content": "I work at Stripe as a backend engineer."},
+            {"role": "assistant", "content": "Nice, payments infra is fun."},
+            {"role": "user", "content": "I'm vegetarian and allergic to shellfish."},
+            {"role": "assistant", "content": "Got it, I'll remember that."}
+          ]
+        }
+      ],
+      "probes": [
+        {"query": "Where does the user work?", "expect": ["Stripe"], "expect_keys": ["employment"], "category": "basic"},
+        {"query": "What are the user's dietary restrictions?", "expect": ["vegetarian", "shellfish"], "expect_keys": ["diet", "allergy"], "category": "basic"}
+      ]
+    },
+    {
+      "id": "implicit-pet",
+      "user_id": "fix-pet",
+      "category": "implicit",
+      "description": "A pet's name is only stated implicitly ('Took Biscuit for a walk').",
+      "conversations": [
+        {
+          "session_id": "fix-pet-s1",
+          "messages": [
+            {"role": "user", "content": "Took Biscuit for a long walk this morning, the weather was perfect."},
+            {"role": "assistant", "content": "Sounds like a lovely morning!"}
+          ]
+        }
+      ],
+      "probes": [
+        {"query": "What is the name of the user's pet?", "expect": ["Biscuit"], "expect_keys": ["pet.name"], "category": "implicit"}
+      ]
+    },
+    {
+      "id": "fact-evolution",
+      "user_id": "fix-evolution",
+      "category": "evolution",
+      "description": "Employment changes across sessions: Stripe (early) -> Notion (later). Current answer is Notion.",
+      "conversations": [
+        {
+          "session_id": "fix-evo-s1",
+          "messages": [
+            {"role": "user", "content": "I work at Stripe."},
+            {"role": "assistant", "content": "Cool!"}
+          ]
+        },
+        {
+          "session_id": "fix-evo-s3",
+          "messages": [
+            {"role": "user", "content": "Big news — I just joined Notion!"},
+            {"role": "assistant", "content": "Congrats on the new role!"}
+          ]
+        }
+      ],
+      "probes": [
+        {"query": "Where does the user work now?", "expect": ["Notion"], "expect_keys": ["employment"], "category": "evolution", "recall_expected": false}
+      ]
+    },
+    {
+      "id": "multi-hop",
+      "user_id": "fix-multihop",
+      "category": "multihop",
+      "description": "Pet fact and city fact live in DIFFERENT sessions with NO shared keywords; answering 'what city does the user with the dog Biscuit live in' needs connecting two memories.",
+      "conversations": [
+        {
+          "session_id": "fix-mh-pets",
+          "messages": [
+            {"role": "user", "content": "My dog Biscuit just turned three. We celebrated with a new chew toy."},
+            {"role": "assistant", "content": "Happy birthday to Biscuit!"}
+          ]
+        },
+        {
+          "session_id": "fix-mh-city",
+          "messages": [
+            {"role": "user", "content": "I just moved to Lisbon for the new job. The food scene here is incredible."},
+            {"role": "assistant", "content": "Lisbon is wonderful, enjoy the pastéis de nata."}
+          ]
+        }
+      ],
+      "probes": [
+        {"query": "What city does the user with the dog named Biscuit live in?", "expect": ["Lisbon", "Biscuit"], "expect_keys": ["location", "pet.name"], "category": "multihop", "recall_expected": false}
+      ]
+    },
+    {
+      "id": "noise-resistance",
+      "user_id": "fix-noise",
+      "category": "noise",
+      "description": "A real fact is stored, then a probe asks about a topic never discussed. Context should be empty (needs recall thresholding — a Phase-3 gap).",
+      "conversations": [
+        {
+          "session_id": "fix-noise-s1",
+          "messages": [
+            {"role": "user", "content": "I work at Stripe."},
+            {"role": "assistant", "content": "Noted."}
+          ]
+        }
+      ],
+      "probes": [
+        {"query": "What is the user's favourite football team?", "expect": [], "expect_empty": true, "category": "noise", "recall_expected": false}
+      ]
+    },
+    {
+      "id": "opinion-arc",
+      "user_id": "fix-opinion",
+      "category": "opinion",
+      "description": "An opinion about TypeScript evolves across three sessions: love -> annoyance -> nuanced.",
+      "conversations": [
+        {
+          "session_id": "fix-op-s1",
+          "messages": [
+            {"role": "user", "content": "Honestly, I love TypeScript. Best language I've used."},
+            {"role": "assistant", "content": "Strong types are great."}
+          ]
+        },
+        {
+          "session_id": "fix-op-s2",
+          "messages": [
+            {"role": "user", "content": "TypeScript generics are getting annoying lately."},
+            {"role": "assistant", "content": "They can get hairy."}
+          ]
+        },
+        {
+          "session_id": "fix-op-s3",
+          "messages": [
+            {"role": "user", "content": "TypeScript is fine for big projects, but I'd use Python for scripts."},
+            {"role": "assistant", "content": "Reasonable take."}
+          ]
+        }
+      ],
+      "probes": [
+        {"query": "How does the user feel about TypeScript?", "expect": ["TypeScript"], "expect_keys": ["opinion.typescript"], "category": "opinion"}
+      ]
+    }
+  ]
+}
